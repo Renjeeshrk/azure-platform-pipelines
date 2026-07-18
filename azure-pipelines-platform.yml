@@ -1,0 +1,195 @@
+trigger: none
+pr: none
+
+pool:
+  Default
+
+variables:
+- group: platform
+
+- name: terraformVersion
+  value: '1.15.7'
+
+- name: terraformWorkingDirectory
+  value: '$(System.DefaultWorkingDirectory)/environments/platform'
+
+- name: serviceConnection
+  value: 'svc-az-platform'
+
+- name: backendStorageAccount
+  value: 'XXXX'
+  
+- name: backendContainer
+  value: 'tfstate'
+
+- name: backendKey
+  value: 'platform.tfstate'
+
+- name: planArtifactName
+  value: 'platform-tfplan'
+
+- name: terraformVarFile
+  value: 'platform.tfvars'
+
+
+stages:
+
+# =========================================================
+# STAGE 1: VALIDATE
+# =========================================================
+- stage: Validate
+  displayName: 'Terraform Validate'
+
+  jobs:
+  - job: TerraformValidate
+    displayName: 'Validate Terraform Configuration'
+    continueOnError: false
+
+    steps:
+    - checkout: self
+      clean: true
+
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: '$(terraformVersion)'
+
+    - script: |
+        terraform fmt -check -recursive
+      displayName: 'Terraform Format Check'
+      workingDirectory: '$(System.DefaultWorkingDirectory)'
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(terraformWorkingDirectory)'
+        backendServiceArm: '$(serviceConnection)'
+        backendAzureRmStorageAccountName: '$(backendStorageAccount)'
+        backendAzureRmContainerName: '$(backendContainer)'
+        backendAzureRmKey: '$(backendKey)'
+        commandOptions: '-input=false -reconfigure'
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Validate'
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(terraformWorkingDirectory)'
+
+
+# =========================================================
+# STAGE 2: PLAN
+# =========================================================
+- stage: Plan
+  displayName: 'Terraform Plan'
+  dependsOn: Validate
+  condition: succeeded()
+
+  jobs:
+  - job: TerraformPlan
+    displayName: 'Create Terraform Plan'
+
+    steps:
+    - checkout: self
+      clean: true
+
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: '$(terraformVersion)'
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(terraformWorkingDirectory)'
+        backendServiceArm: '$(serviceConnection)'
+        backendAzureRmStorageAccountName: '$(backendStorageAccount)'
+        backendAzureRmContainerName: '$(backendContainer)'
+        backendAzureRmKey: '$(backendKey)'
+        commandOptions: '-input=false -reconfigure'
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Plan'
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(terraformWorkingDirectory)'
+        environmentServiceNameAzureRM: '$(serviceConnection)'
+        commandOptions: >
+          -input=false
+          -lock-timeout=5m
+          -var-file=$(terraformVarFile)
+          -out=$(Build.ArtifactStagingDirectory)/platform.tfplan
+      env:
+        TF_VAR_location: '$(location)'
+        TF_VAR_tag: '$(tag)'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Terraform Plan'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)'
+        artifact: '$(planArtifactName)'
+        publishLocation: 'pipeline'
+
+
+# =========================================================
+# STAGE 3: APPLY
+# =========================================================
+- stage: Apply
+  displayName: 'Terraform Apply'
+  dependsOn: Plan
+  condition: succeeded()
+
+  jobs:
+  - deployment: TerraformApply
+    displayName: 'Apply Platform Infrastructure'
+
+    # Create an Azure DevOps Environment named Platform.
+    # Configure approvals under Environment > Approvals and checks.
+    environment: 'Platform'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            clean: true
+
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: '$(terraformVersion)'
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Terraform Plan'
+            inputs:
+              artifact: '$(planArtifactName)'
+              path: '$(Pipeline.Workspace)/$(planArtifactName)'
+
+          - task: TerraformTask@5
+            displayName: 'Terraform Init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: '$(terraformWorkingDirectory)'
+              backendServiceArm: '$(serviceConnection)'
+              backendAzureRmStorageAccountName: '$(backendStorageAccount)'
+              backendAzureRmContainerName: '$(backendContainer)'
+              backendAzureRmKey: '$(backendKey)'
+              commandOptions: '-input=false -reconfigure'
+
+          - task: TerraformTask@5
+            displayName: 'Terraform Apply'
+            inputs:
+              provider: 'azurerm'
+              command: 'apply'
+              workingDirectory: '$(terraformWorkingDirectory)'
+              environmentServiceNameAzureRM: '$(serviceConnection)'
+              commandOptions: >
+                -input=false
+                -lock-timeout=5m
+                $(Pipeline.Workspace)/$(planArtifactName)/platform.tfplan

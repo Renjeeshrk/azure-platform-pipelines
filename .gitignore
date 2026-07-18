@@ -1,0 +1,30 @@
+# Terraform
+*.tfstate
+*.tfstate.backup
+#*.tfvars
+.terraform/
+
+# Local Terraform directories
+crash.log
+override.tf
+override.tf.json
+#terraform.tfvars
+terraform.tfvars.json
+*_override.tf
+
+# CLI config
+.terraformrc
+terraform.rc
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Azure specific
+*.azure*
+
+# OS generated files
+.DS_Store
+Thumbs.db
